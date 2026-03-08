@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⬡ GANTTASK</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { background: #0A0A0F; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #0D0D14; }
+    ::-webkit-scrollbar-thumb { background: #2D2D3A; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    const COLORS = ["#FF6B6B","#4ECDC4","#45B7D1","#96CEB4","#FFEAA7","#DDA0DD","#98D8C8","#F7DC6F","#BB8FCE","#85C1E9"];
+    const STATUS_CFG = {
+      todo:       { label:"未着手", color:"#6B7280", bg:"#1F2937" },
+      inprogress: { label:"進行中", color:"#F59E0B", bg:"#292400" },
+      done:       { label:"完了",   color:"#10B981", bg:"#022c22" },
+    };
+    const ROW_H = 44, BAR_TOP = 10, BAR_H = 24, CELL_W = 36, LABEL_W = 220;
+
+    const INIT = [
+      { id:1,  name:"要件定義",           startDate:"2025-01-06", endDate:"2025-01-10", status:"done",       color:COLORS[0], assignee:"田中", parentId:null, deps:[]    },
+      { id:2,  name:"UI設計",             startDate:"2025-01-09", endDate:"2025-01-15", status:"done",       color:COLORS[1], assignee:"鈴木", parentId:null, deps:[1]   },
+      { id:7,  name:"ワイヤーフレーム",   startDate:"2025-01-09", endDate:"2025-01-11", status:"done",       color:COLORS[1], assignee:"鈴木", parentId:2,    deps:[]    },
+      { id:8,  name:"ビジュアルデザイン", startDate:"2025-01-12", endDate:"2025-01-15", status:"done",       color:COLORS[1], assignee:"鈴木", parentId:2,    deps:[7]   },
+      { id:3,  name:"フロントエンド開発", startDate:"2025-01-14", endDate:"2025-01-24", status:"inprogress", color:COLORS[2], assignee:"田中", parentId:null, deps:[2]   },
+      { id:9,  name:"コンポーネント実装", startDate:"2025-01-14", endDate:"2025-01-19", status:"inprogress", color:COLORS[2], assignee:"田中", parentId:3,    deps:[]    },
+      { id:10, name:"API連携",            startDate:"2025-01-20", endDate:"2025-01-24", status:"todo",       color:COLORS[2], assignee:"田中", parentId:3,    deps:[9]   },
+      { id:4,  name:"バックエンド開発",   startDate:"2025-01-13", endDate:"2025-01-22", status:"inprogress", color:COLORS[3], assignee:"佐藤", parentId:null, deps:[1]   },
+      { id:5,  name:"テスト",             startDate:"2025-01-22", endDate:"2025-01-28", status:"todo",       color:COLORS[4], assignee:"鈴木", parentId:null, deps:[3,4] },
+      { id:6,  name:"リリース準備",       startDate:"2025-01-27", endDate:"2025-01-31", status:"todo",       color:COLORS[5], assignee:"田中", parentId:null, deps:[5]   },
+    ];
+
+    const STORAGE_KEY = "ganttask_v1";
+    const toStr = d => d.toISOString().split("T")[0];
+    const daysBetween = (d1,d2) => Math.round((new Date(d2)-new Date(d1))/86400000);
+    const fmtDate = s => { const d=new Date(s); return `${d.getMonth()+1}/${d.getDate()}`; };
+    function getDays(s,e){ const days=[],cur=new Date(s),end=new Date(e); while(cur<=end){days.push(new Date(cur));cur.setDate(cur.getDate()+1);} return days; }
+
+    function buildRows(tasks, collapsed) {
+      const rows = [], childMap = {};
+      tasks.filter(t=>t.parentId).forEach(t=>{ if(!childMap[t.parentId])childMap[t.parentId]=[]; childMap[t.parentId].push(t); });
+      for(const t of tasks.filter(t=>!t.parentId)){
+        const hasChildren = !!(childMap[t.id]?.length);
+        rows.push({...t, depth:0, hasChildren});
+        if(hasChildren && !collapsed[t.id]) for(const c of childMap[t.id]||[]) rows.push({...c, depth:1, hasChildren:false});
+      }
+      return rows;
+    }
+
+    function loadTasks() {
+      try { const s = localStorage.getItem(STORAGE_KEY); return s ? JSON.parse(s) : INIT; } catch { return INIT; }
+    }
+
+    function App() {
+      const [tasks, setTasksRaw] = useState(loadTasks);
+      const [collapsed, setCollapsed] = useState({});
+      const [view, setView] = useState("split");
+      const [showModal, setShowModal] = useState(false);
+      const [editId, setEditId] = useState(null);
+      const [filters, setFilters] = useState(new Set());
+      const today = toStr(new Date());
+
+      // Auto-save to localStorage
+      const setTasks = (fn) => {
+        setTasksRaw(prev => {
+          const next = typeof fn === "function" ? fn(prev) : fn;
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+          return next;
+        });
+      };
+
+      const emptyForm = (parentId=null) => {
+        const parent = parentId ? tasks.find(t=>t.id===parentId) : null;
+        return { name:"", startDate:parent?parent.startDate:today, endDate:parent?parent.endDate:today,
+          status:"todo", color:parent?parent.color:COLORS[Math.floor(Math.random()*COLORS.length)], assignee:"", parentId, deps:[] };
+      };
+      const [form, setForm] = useState(emptyForm());
+
+      const allDates = useMemo(()=>{
+        if(!tasks.length) return [];
+        const mn=tasks.reduce((m,t)=>t.startDate<m?t.startDate:m,tasks[0].startDate);
+        const mx=tasks.reduce((m,t)=>t.endDate>m?t.endDate:m,tasks[0].endDate);
+        const s=new Date(mn); s.setDate(s.getDate()-3);
+        const e=new Date(mx); e.setDate(e.getDate()+3);
+        return getDays(toStr(s),toStr(e));
+      },[tasks]);
+
+      const flatRows = useMemo(()=>{
+        const all = buildRows(tasks, collapsed);
+        return filters.size===0 ? all : all.filter(t=>filters.has(t.status));
+      },[tasks,collapsed,filters]);
+
+      const openNew = (parentId=null) => { setEditId(null); setForm(emptyForm(parentId)); setShowModal(true); };
+      const openEdit = task => { setEditId(task.id); setForm({...task, deps:task.deps||[], parentId:task.parentId||null}); setShowModal(true); };
+      const save = () => {
+        if(!form.name||!form.startDate||!form.endDate) return;
+        if(editId) setTasks(ts=>ts.map(t=>t.id===editId?{...form,id:editId}:t));
+        else setTasks(ts=>[...ts,{...form,id:Date.now()}]);
+        setShowModal(false);
+      };
+      const remove = id => setTasks(ts=>ts.filter(t=>t.id!==id&&t.parentId!==id));
+      const cycleStatus = id => { const o=["todo","inprogress","done"]; setTasks(ts=>ts.map(t=>t.id===id?{...t,status:o[(o.indexOf(t.status)+1)%3]}:t)); };
+      const toggleCollapse = id => setCollapsed(c=>({...c,[id]:!c[id]}));
+      const toggleDep = id => setForm(f=>({...f,deps:f.deps.includes(id)?f.deps.filter(d=>d!==id):[...f.deps,id]}));
+
+      const resetData = () => { if(confirm("全タスクをリセットしてサンプルデータに戻しますか？")){ setTasks(INIT); } };
+
+      const renderArrows = (hasLabel) => {
+        if(!allDates.length || flatRows.length===0) return null;
+        const origin = toStr(allDates[0]);
+        const lw = hasLabel ? LABEL_W : 0;
+        const arrows = [];
+        for(const row of flatRows){
+          if(!row.deps?.length) continue;
+          const toIdx = flatRows.findIndex(r=>r.id===row.id); if(toIdx<0) continue;
+          const toOff = daysBetween(origin, row.startDate);
+          const toX = lw + toOff*CELL_W + (row.depth===1?6:3);
+          const toY = toIdx*ROW_H + BAR_TOP + (row.depth===1?3:0) + (row.depth===1?BAR_H-6:BAR_H)/2;
+          for(const depId of row.deps){
+            const depRow = flatRows.find(r=>r.id===depId); if(!depRow) continue;
+            const fromIdx = flatRows.findIndex(r=>r.id===depId);
+            const depOff = daysBetween(origin, depRow.startDate);
+            const depDur = daysBetween(depRow.startDate, depRow.endDate)+1;
+            const fromX = lw + (depOff+depDur)*CELL_W - (depRow.depth===1?6:3);
+            const fromY = fromIdx*ROW_H + BAR_TOP + (depRow.depth===1?3:0) + (depRow.depth===1?BAR_H-6:BAR_H)/2;
+            let path; const clr = depRow.color;
+            if(fromX + 6 < toX){ const mx2 = fromX + (toX-fromX)*0.55; path = `M${fromX},${fromY} C${mx2},${fromY} ${mx2},${toY} ${toX},${toY}`; }
+            else { const ex = Math.max(fromX+16, toX+24); path = `M${fromX},${fromY} H${ex} V${toY} H${toX}`; }
+            arrows.push(
+              <g key={`${depId}-${row.id}`}>
+                <path d={path} stroke={clr} strokeWidth={1.5} fill="none" opacity={0.55} strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round"/>
+                <polygon points={`${toX},${toY} ${toX-9},${toY-4.5} ${toX-9},${toY+4.5}`} fill={clr} opacity={0.65}/>
+              </g>
+            );
+          }
+        }
+        return <svg style={{ position:"absolute",top:0,left:0,width:"100%",height:flatRows.length*ROW_H,pointerEvents:"none",overflow:"visible",zIndex:6 }}>{arrows}</svg>;
+      };
+
+      return (
+        <div style={{ height:"100vh", background:"#0A0A0F", color:"#E2E8F0", fontFamily:"'JetBrains Mono','Fira Code',monospace", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <style>{`
+            .row:hover{background:rgba(255,255,255,0.025)!important}
+            .gbar{cursor:pointer;transition:filter 0.15s}.gbar:hover{filter:brightness(1.35)}
+            .btn{cursor:pointer;border:none;transition:all 0.18s;font-family:inherit}.btn:hover{opacity:0.82;transform:translateY(-1px)}.btn:active{transform:translateY(0)}
+            .vbtn{background:transparent;border:1px solid #2D2D3A;color:#6B7280;padding:5px 13px;border-radius:6px;font-family:inherit;font-size:12px;cursor:pointer;transition:all 0.18s}
+            .vbtn.on{background:#1E1E2E;border-color:#4A4A6A;color:#C4B5FD}.vbtn:hover:not(.on){border-color:#4A4A6A;color:#9CA3AF}
+            input,select{background:#0D0D14;border:1px solid #2D2D3A;color:#E2E8F0;padding:8px 11px;border-radius:6px;font-family:inherit;font-size:13px;width:100%;outline:none}
+            input:focus,select:focus{border-color:#7C3AED;box-shadow:0 0 0 2px rgba(124,58,237,0.15)}
+            .del{opacity:0;background:transparent;border:none;color:#EF4444;cursor:pointer;font-size:16px;transition:opacity 0.2s;line-height:1;padding:0}
+            .row:hover .del{opacity:1}
+            .sbtn{opacity:0;background:transparent;border:1px solid #232334;color:#555577;cursor:pointer;font-size:10px;border-radius:4px;padding:2px 6px;font-family:inherit;transition:all 0.18s;white-space:nowrap}
+            .row:hover .sbtn{opacity:1}.sbtn:hover{border-color:#7C3AED;color:#C4B5FD}
+            .dep-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;cursor:pointer;border:1px solid transparent;transition:all 0.15s}
+            .dep-item:hover{background:#161624;border-color:#2D2D3A}.dep-item.sel{background:#1A1630;border-color:#7C3AED55}
+            label{font-size:11px;color:#6B7280;display:block;margin-bottom:4px;letter-spacing:0.07em;text-transform:uppercase}
+            .overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;z-index:200}
+            .modal{background:#111118;border:1px solid #252535;border-radius:14px;padding:26px;width:460px;max-height:88vh;overflow-y:auto;box-shadow:0 32px 80px rgba(0,0,0,0.7)}
+            .save-indicator{font-size:10px;color:#3A5A3A;display:flex;align-items:center;gap:4px}
+          `}</style>
+
+          {/* Header */}
+          <div style={{ padding:"15px 22px", borderBottom:"1px solid #1A1A2E", display:"flex", alignItems:"center", gap:14, background:"#0D0D14", flexShrink:0 }}>
+            <div style={{ fontFamily:"'Syne',sans-serif", fontSize:20, fontWeight:800, color:"#C4B5FD", letterSpacing:"-0.02em" }}>⬡ GANTTASK</div>
+            <div className="save-indicator" title="データはブラウザに自動保存されます">
+              <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3.5" fill="#10B981" opacity="0.8"/></svg>
+              自動保存
+            </div>
+            <div style={{ flex:1 }} />
+            <div style={{ display:"flex", gap:5 }}>
+              {[["split","⊞ 分割"],["list","≡ リスト"],["gantt","▦ ガント"]].map(([v,l])=>(
+                <button key={v} className={`vbtn ${view===v?"on":""}`} onClick={()=>setView(v)}>{l}</button>
+              ))}
+            </div>
+            <button className="btn" onClick={resetData} style={{ background:"transparent", border:"1px solid #2D2D3A", color:"#4A4A6A", padding:"6px 12px", borderRadius:7, fontSize:11 }} title="サンプルデータにリセット">↺</button>
+            <button className="btn" onClick={()=>openNew()} style={{ background:"#7C3AED", color:"white", padding:"7px 16px", borderRadius:7, fontSize:13, fontWeight:600 }}>+ タスク追加</button>
+          </div>
+
+          {/* Filter Bar */}
+          <div style={{ padding:"9px 22px", borderBottom:"1px solid #1A1A2E", display:"flex", gap:6, alignItems:"center", flexShrink:0 }}>
+            <button className="btn" onClick={()=>setFilters(new Set())} style={{
+              background: filters.size===0?"#1E1E2E":"transparent",
+              border:`1px solid ${filters.size===0?"#4A4A6A":"#1A1A2E"}`,
+              color: filters.size===0?"#E2E8F0":"#6B7280",
+              padding:"4px 12px", borderRadius:20, fontSize:11
+            }}>全て ({tasks.length})</button>
+
+            <div style={{ width:1, height:18, background:"#1A1A2E", margin:"0 2px" }}/>
+
+            {Object.entries(STATUS_CFG).map(([k,c])=>{
+              const active = filters.has(k);
+              const count = tasks.filter(t=>t.status===k).length;
+              return (
+                <button key={k} className="btn" onClick={()=>{ setFilters(prev=>{ const next=new Set(prev); next.has(k)?next.delete(k):next.add(k); return next; }); }} style={{
+                  background: active?`${c.color}18`:"transparent",
+                  border: `1px solid ${active?c.color+"66":"#1A1A2E"}`,
+                  color: active?c.color:"#6B7280",
+                  padding:"4px 12px", borderRadius:20, fontSize:11,
+                  display:"flex", alignItems:"center", gap:5
+                }}>
+                  <span style={{ width:6, height:6, borderRadius:"50%", background:active?c.color:"#3A3A5A", display:"inline-block", flexShrink:0, transition:"background 0.2s" }}/>
+                  {c.label}
+                  <span style={{ background:active?`${c.color}33`:"#1A1A2E", color:active?c.color:"#4A4A6A", borderRadius:10, padding:"0 5px", fontSize:10, fontWeight:600, minWidth:18, textAlign:"center" }}>{count}</span>
+                </button>
+              );
+            })}
+
+            <div style={{ flex:1 }} />
+
+            {filters.size > 0 && (
+              <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:10, color:"#6B7280" }}>
+                <span style={{ color:"#3A3A5A" }}>フィルター:</span>
+                {[...filters].map(k=>(
+                  <span key={k} style={{ background:`${STATUS_CFG[k].color}22`, color:STATUS_CFG[k].color, border:`1px solid ${STATUS_CFG[k].color}44`, borderRadius:10, padding:"1px 8px", display:"flex", alignItems:"center", gap:4 }}>
+                    {STATUS_CFG[k].label}
+                    <span onClick={()=>setFilters(p=>{const n=new Set(p);n.delete(k);return n;})} style={{ cursor:"pointer", opacity:0.7, fontWeight:700 }}>×</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            <span style={{ fontSize:10, color:"#2D2D4A", marginLeft:6 }}>TODAY {fmtDate(today)}</span>
+          </div>
+
+          {/* Body */}
+          <div style={{ flex:1, display:"flex", overflow:"hidden" }}>
+
+            {/* List */}
+            {(view==="split"||view==="list") && (
+              <div style={{ width:view==="split"?360:"100%", borderRight:"1px solid #1A1A2E", overflowY:"auto", flexShrink:0 }}>
+                <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                  <thead>
+                    <tr style={{ background:"#0D0D14", position:"sticky", top:0, zIndex:10 }}>
+                      {["タスク名","期間","担当","状態",""].map((h,i)=>(
+                        <th key={i} style={{ padding:"9px 11px", textAlign:"left", fontSize:10, color:"#3A3A5A", fontWeight:500, letterSpacing:"0.06em", borderBottom:"1px solid #1A1A2E", whiteSpace:"nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {flatRows.map(task=>(
+                      <tr key={task.id} className="row" style={{ borderBottom:"1px solid #0D0D18", height:ROW_H }}>
+                        <td style={{ padding:"0 11px", paddingLeft:task.depth===1?24:11 }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                            {task.hasChildren
+                              ? <button onClick={()=>toggleCollapse(task.id)} style={{ background:"transparent", border:"none", color:"#555577", cursor:"pointer", width:14, fontSize:10, padding:0, flexShrink:0 }}>{collapsed[task.id]?"▶":"▼"}</button>
+                              : <div style={{ width:14, flexShrink:0, textAlign:"center" }}>{task.depth===1&&<span style={{ color:"#2D2D4A", fontSize:12 }}>└</span>}</div>
+                            }
+                            <div style={{ width:3, height:task.depth===1?13:16, background:task.color, borderRadius:2, flexShrink:0, opacity:task.depth===1?0.7:1 }}/>
+                            <span onClick={()=>openEdit(task)} style={{ fontSize:task.depth===1?11:12, fontWeight:500, color:task.status==="done"?"#4B5563":"#E2E8F0", textDecoration:task.status==="done"?"line-through":"none", cursor:"pointer", flex:1 }}>
+                              {task.name}
+                            </span>
+                            {task.depth===0 && <button className="sbtn" onClick={e=>{e.stopPropagation();openNew(task.id);}}>+ sub</button>}
+                          </div>
+                        </td>
+                        <td style={{ padding:"0 11px", fontSize:10, color:"#6B7280", whiteSpace:"nowrap" }}>{fmtDate(task.startDate)}–{fmtDate(task.endDate)}</td>
+                        <td style={{ padding:"0 11px", fontSize:11, color:"#9CA3AF" }}>{task.assignee||"—"}</td>
+                        <td style={{ padding:"0 11px" }} onClick={e=>{e.stopPropagation();cycleStatus(task.id);}}>
+                          <span style={{ background:STATUS_CFG[task.status].bg, color:STATUS_CFG[task.status].color, border:`1px solid ${STATUS_CFG[task.status].color}44`, padding:"3px 7px", borderRadius:4, fontSize:10, cursor:"pointer", whiteSpace:"nowrap" }}>
+                            {STATUS_CFG[task.status].label}
+                          </span>
+                        </td>
+                        <td style={{ padding:"0 8px" }}><button className="del" onClick={()=>remove(task.id)}>×</button></td>
+                      </tr>
+                    ))}
+                    {flatRows.length===0&&<tr><td colSpan={5} style={{ padding:36, textAlign:"center", color:"#2D2D3A", fontSize:12 }}>タスクがありません</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Gantt */}
+            {(view==="split"||view==="gantt") && allDates.length>0 && (
+              <div style={{ flex:1, overflow:"auto" }}>
+                <div style={{ minWidth:(view==="gantt"?LABEL_W:0)+allDates.length*CELL_W }}>
+                  <div style={{ display:"flex", background:"#0D0D14", position:"sticky", top:0, zIndex:10, borderBottom:"1px solid #1A1A2E" }}>
+                    {view==="gantt"&&<div style={{ width:LABEL_W, flexShrink:0, padding:"9px 14px", fontSize:10, color:"#3A3A5A", borderRight:"1px solid #1A1A2E" }}>タスク名</div>}
+                    <div style={{ display:"flex" }}>
+                      {allDates.map((d,i)=>{
+                        const isToday=toStr(d)===today, isWE=d.getDay()===0||d.getDay()===6;
+                        return (
+                          <div key={i} style={{ width:CELL_W, flexShrink:0, textAlign:"center", padding:"7px 0 5px", fontSize:10,
+                            color:isToday?"#EF4444":isWE?"#3A3A5A":"#4A5568",
+                            background:isToday?"rgba(239,68,68,0.07)":isWE?"rgba(255,255,255,0.01)":"transparent",
+                            borderRight:"1px solid #0D0D14", position:"relative", fontWeight:isToday?700:400 }}>
+                            {(d.getDate()===1||i===0)&&<div style={{ fontSize:9, color:"#2D2D3A", marginBottom:1 }}>{d.getMonth()+1}月</div>}
+                            <div>{d.getDate()}</div>
+                            {isToday&&<div style={{ position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)", width:3, height:3, background:"#EF4444", borderRadius:"50%" }}/>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div style={{ position:"relative" }}>
+                    {flatRows.map((task,ri)=>{
+                      const origin=toStr(allDates[0]);
+                      const sOff=daysBetween(origin,task.startDate);
+                      const dur=daysBetween(task.startDate,task.endDate)+1;
+                      const prog=task.status==="done"?100:task.status==="inprogress"?55:0;
+                      const sub=task.depth===1;
+                      const lw=view==="gantt"?LABEL_W:0;
+                      const barLeft=lw+sOff*CELL_W+(sub?6:3);
+                      const barTop=ri*ROW_H+BAR_TOP+(sub?4:0);
+                      const barW=Math.max(dur*CELL_W-(sub?12:6),8);
+                      const barH=sub?BAR_H-8:BAR_H;
+                      return (
+                        <div key={task.id} style={{ display:"flex", borderBottom:"1px solid #0D0D14", height:ROW_H, background:ri%2===0?"transparent":"rgba(255,255,255,0.007)" }}>
+                          {view==="gantt"&&(
+                            <div style={{ width:LABEL_W, flexShrink:0, padding:"0 11px", display:"flex", alignItems:"center", gap:5, borderRight:"1px solid #1A1A2E", paddingLeft:sub?26:11 }}>
+                              {sub&&<span style={{ color:"#2D2D4A", fontSize:12, flexShrink:0 }}>└</span>}
+                              <div style={{ width:3, height:sub?13:16, background:task.color, borderRadius:2, flexShrink:0, opacity:sub?0.7:1 }}/>
+                              <span onClick={()=>openEdit(task)} style={{ fontSize:sub?11:12, color:task.status==="done"?"#4B5563":"#D1D5DB", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, cursor:"pointer" }}>{task.name}</span>
+                            </div>
+                          )}
+                          <div style={{ display:"flex", flex:1 }}>
+                            {allDates.map((d,i)=>{
+                              const isWE=d.getDay()===0||d.getDay()===6, isT=toStr(d)===today;
+                              return <div key={i} style={{ width:CELL_W, height:ROW_H, flexShrink:0, background:isT?"rgba(239,68,68,0.03)":isWE?"rgba(255,255,255,0.008)":"transparent", borderRight:"1px solid #0D0D14" }}/>;
+                            })}
+                          </div>
+                          <div className="gbar" onClick={()=>openEdit(task)} style={{
+                            position:"absolute", left:barLeft, top:barTop, width:barW, height:barH,
+                            background:`${task.color}1C`, border:`${sub?"1px":"1.5px"} solid ${task.color}${sub?"55":"88"}`,
+                            borderRadius:sub?4:6, overflow:"hidden", zIndex:3
+                          }}>
+                            <div style={{ height:"100%", width:`${prog}%`, background:`${task.color}44`, borderRadius:4 }}/>
+                            <span style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", paddingLeft:6, fontSize:10, color:task.color, fontWeight:600, whiteSpace:"nowrap", overflow:"hidden" }}>
+                              {dur*CELL_W>65?task.name:""}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {renderArrows(view==="gantt")}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Stats */}
+          <div style={{ padding:"9px 22px", borderTop:"1px solid #1A1A2E", background:"#0D0D14", display:"flex", gap:18, fontSize:11, flexShrink:0, alignItems:"center" }}>
+            {Object.entries(STATUS_CFG).map(([k,c])=>(
+              <div key={k} style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <div style={{ width:7, height:7, borderRadius:"50%", background:c.color }}/>
+                <span style={{ color:"#4B5563" }}>{c.label}:</span>
+                <span style={{ color:c.color, fontWeight:600 }}>{tasks.filter(t=>t.status===k).length}</span>
+              </div>
+            ))}
+            <div style={{ flex:1 }}/>
+            <span style={{ color:"#3A3A5A" }}>{tasks.filter(t=>!t.parentId).length} tasks · {tasks.filter(t=>t.parentId).length} subtasks</span>
+          </div>
+
+          {/* Modal */}
+          {showModal&&(
+            <div className="overlay" onClick={()=>setShowModal(false)}>
+              <div className="modal" onClick={e=>e.stopPropagation()}>
+                <div style={{ fontFamily:"'Syne',sans-serif", fontSize:17, fontWeight:700, marginBottom:20, color:"#E2E8F0" }}>
+                  {editId?"✎ タスクを編集":form.parentId?"+ サブタスクを追加":"+ 新しいタスク"}
+                </div>
+                {form.parentId&&(
+                  <div style={{ marginBottom:14, padding:"8px 12px", background:"#16162A", borderRadius:8, border:"1px solid #2D2D4A", fontSize:11, color:"#8B8BCC" }}>
+                    親タスク: {tasks.find(t=>t.id===form.parentId)?.name}
+                  </div>
+                )}
+                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                  <div>
+                    <label>タスク名</label>
+                    <input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="タスク名を入力..." autoFocus/>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                    <div><label>開始日</label><input type="date" value={form.startDate} onChange={e=>setForm(f=>({...f,startDate:e.target.value}))}/></div>
+                    <div><label>終了日</label><input type="date" value={form.endDate} onChange={e=>setForm(f=>({...f,endDate:e.target.value}))}/></div>
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                    <div>
+                      <label>ステータス</label>
+                      <select value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>
+                        <option value="todo">未着手</option><option value="inprogress">進行中</option><option value="done">完了</option>
+                      </select>
+                    </div>
+                    <div><label>担当者</label><input value={form.assignee} onChange={e=>setForm(f=>({...f,assignee:e.target.value}))} placeholder="担当者名..."/></div>
+                  </div>
+                  {!form.parentId&&(
+                    <div>
+                      <label>親タスク（サブタスクにする場合）</label>
+                      <select value={""} onChange={e=>e.target.value&&setForm(f=>({...f,parentId:Number(e.target.value)}))}>
+                        <option value="">なし（トップレベル）</option>
+                        {tasks.filter(t=>!t.parentId&&t.id!==editId).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label>先行タスク（完了後に開始）</label>
+                    <div style={{ border:"1px solid #252535", borderRadius:8, maxHeight:155, overflowY:"auto", padding:5 }}>
+                      {tasks.filter(t=>t.id!==editId&&t.id!==form.parentId).length===0
+                        ?<div style={{ padding:"8px 10px", fontSize:12, color:"#3A3A5A" }}>選択可能なタスクがありません</div>
+                        :tasks.filter(t=>t.id!==editId&&t.id!==form.parentId).map(t=>{
+                          const sel=form.deps.includes(t.id);
+                          return (
+                            <div key={t.id} className={`dep-item ${sel?"sel":""}`} onClick={()=>toggleDep(t.id)}>
+                              <div style={{ width:3, height:14, background:t.color, borderRadius:2, flexShrink:0 }}/>
+                              <span style={{ fontSize:12, flex:1, color:sel?"#C4B5FD":"#9CA3AF" }}>
+                                {t.parentId?`  └ ${t.name}`:t.name}
+                              </span>
+                              <div style={{ width:16, height:16, borderRadius:4, border:`1.5px solid ${sel?"#7C3AED":"#2D2D3A"}`, background:sel?"#7C3AED":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                                {sel&&<span style={{ color:"white", fontSize:10, fontWeight:700, lineHeight:1 }}>✓</span>}
+                              </div>
+                            </div>
+                          );
+                        })
+                      }
+                    </div>
+                    {form.deps.length>0&&<div style={{ marginTop:4, fontSize:10, color:"#6B7280" }}>{form.deps.length}件の先行タスクを選択中</div>}
+                  </div>
+                  <div>
+                    <label>カラー</label>
+                    <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
+                      {COLORS.map(c=>(
+                        <div key={c} onClick={()=>setForm(f=>({...f,color:c}))} style={{ width:26, height:26, borderRadius:"50%", background:c, cursor:"pointer", border:form.color===c?"3px solid white":"3px solid transparent", boxShadow:form.color===c?`0 0 0 2px ${c}`:"none", transition:"all 0.14s" }}/>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", gap:9, marginTop:4 }}>
+                    <button className="btn" onClick={()=>setShowModal(false)} style={{ flex:1, background:"transparent", border:"1px solid #2D2D3A", color:"#6B7280", padding:"9px", borderRadius:8, fontSize:13 }}>キャンセル</button>
+                    <button className="btn" onClick={save} style={{ flex:2, background:"#7C3AED", color:"white", padding:"9px", borderRadius:8, fontSize:13, fontWeight:600 }}>{editId?"更新する":"追加する"}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
