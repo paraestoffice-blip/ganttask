@@ -58,7 +58,8 @@
       inprogress: { label:"進行中", color:"#F59E0B", bg:"#292400" },
       done:       { label:"完了",   color:"#10B981", bg:"#022c22" },
     };
-    const ROW_H = 44, BAR_TOP = 10, BAR_H = 24, CELL_W = 36, LABEL_W = 220;
+    const ROW_H = 44, BAR_TOP = 10, BAR_H = 24, CELL_W = 32;
+    const LABEL_W = window.innerWidth <= 640 ? 110 : 220;
 
     const INIT = [
       {"name":"転入届提出","startDate":"2026-05-08","endDate":"2026-05-08","status":"todo","color":"#45B7D1","assignee":"","parentId":null,"deps":[1777969681746],"id":1777969704931},
@@ -274,12 +275,11 @@
         const lw = view==="gantt" ? LABEL_W : 0;
         const todayOff = daysBetween(origin, today);
         const scrollTo = lw + todayOff * CELL_W - ganttRef.current.clientWidth / 2 + CELL_W / 2;
-        ganttRef.current.scrollLeft = Math.max(0, scrollTo);
+        requestAnimationFrame(()=>{ ganttRef.current.scrollLeft = Math.max(0, scrollTo); });
       }, [allDates, view, today]);
 
       React.useEffect(()=>{ scrollToToday(); },[view]);
-      // 初回マウント時のみ
-      React.useEffect(()=>{ scrollToToday(); },[]);
+      React.useEffect(()=>{ const t=setTimeout(scrollToToday,150); return ()=>clearTimeout(t); },[]);
 
       // ── Phase 2: allDates・flatRows確定後 ──────────────
       const weekDensity = useMemo(()=>{
@@ -713,10 +713,10 @@
                       return (
                         <div key={task.id} style={{ display:"flex", borderBottom:"1px solid #0D0D14", height:ROW_H, background:ri%2===0?"transparent":"rgba(255,255,255,0.007)" }}>
                           {view==="gantt"&&(
-                            <div style={{ width:LABEL_W, flexShrink:0, padding:"0 11px", display:"flex", alignItems:"center", gap:5, borderRight:"1px solid #1A1A2E", paddingLeft:sub?26:11 }}>
+                            <div style={{ width:LABEL_W, flexShrink:0, padding:"0 11px", display:"flex", alignItems:"center", gap:4, borderRight:"1px solid #1A1A2E", paddingLeft:sub?18:6 }}>
                               {sub&&<span style={{ color:"#2D2D4A", fontSize:12, flexShrink:0 }}>└</span>}
                               <div style={{ width:3, height:sub?13:16, background:task.color, borderRadius:2, flexShrink:0, opacity:sub?0.7:1 }}/>
-                              <span onClick={()=>openEdit(task)} style={{ fontSize:sub?11:12, color:task.status==="done"?"#4B5563":"#D1D5DB", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, cursor:"pointer" }}>{task.name}</span>
+                              <span onClick={()=>openEdit(task)} style={{ fontSize:sub?9:10, color:task.status==="done"?"#4B5563":"#D1D5DB", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, cursor:"pointer" }}>{task.name}</span>
                             </div>
                           )}
                           <div style={{ display:"flex", flex:1 }}>
