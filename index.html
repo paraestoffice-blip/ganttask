@@ -7,11 +7,10 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Firebase -->
-  <script type="module" id="firebase-init">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-
+  <!-- Firebase (v8 compat: type="module"不要のグローバル版。Babel standaloneとの衝突回避) -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+  <script>
     const firebaseConfig = {
       apiKey: "AIzaSyAcZpbw0Xj2rRRmr2oKagngVAJX2Gi21ac",
       authDomain: "ganttask-310b7.firebaseapp.com",
@@ -20,13 +19,11 @@
       messagingSenderId: "152224821708",
       appId: "1:152224821708:web:d8bf5b042a044873756d69"
     };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const docRef = db.collection("ganttask").doc("tasks");
 
-    const app = initializeApp(firebaseConfig);
-    const db  = getFirestore(app);
-    const docRef = doc(db, "ganttask", "tasks");
-
-    // Reactアプリへのブリッジ
-    window._firestore = { db, docRef, setDoc, onSnapshot };
+    window._firestore = { db, docRef };
     window.dispatchEvent(new Event("firebase-ready"));
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -171,8 +168,8 @@
       if(!window._firestore) return;
       clearTimeout(_fbTimer);
       _fbTimer = setTimeout(()=>{
-        const { docRef, setDoc } = window._firestore;
-        setDoc(docRef, { tasks: JSON.stringify(tasks) }).catch(()=>{});
+        const { docRef } = window._firestore;
+        docRef.set({ tasks: JSON.stringify(tasks) }).catch(()=>{});
       }, 1000);
     }
 
@@ -249,9 +246,9 @@
       React.useEffect(()=>{
         const setup = () => {
           if(!window._firestore) return;
-          const { docRef, onSnapshot } = window._firestore;
-          const unsub = onSnapshot(docRef, snap => {
-            if(!snap.exists()) return;
+          const { docRef } = window._firestore;
+          const unsub = docRef.onSnapshot(snap => {
+            if(!snap.exists) return;
             try {
               const remote = JSON.parse(snap.data().tasks || "[]");
               if(remote.length > 0) {
